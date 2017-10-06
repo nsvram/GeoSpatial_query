@@ -1,0 +1,623 @@
+-- Function: public.insert_geo_gnaf_nodes(character, integer, integer, character, character, character, character, character, double precision, double precision, double precision, double precision, double precision, double precision, integer)
+
+-- DROP FUNCTION public.insert_geo_gnaf_nodes(character, integer, integer, character, character, character, character, character, double precision, double precision, double precision, double precision, double precision, double precision, integer);
+
+CREATE OR REPLACE FUNCTION public.insert_geo_gnaf_nodes(
+    address_detail_pid character,
+    number_first integer,
+    number_last integer,
+    street_name character,
+    street_type_code character,
+    locality_name character,
+    state_abbreviation character,
+    postcode character,
+    lat double precision,
+    longi double precision,
+    box_longitude_upper double precision,
+    box_latitude_upper double precision,
+    box_longitude_lower double precision,
+    box_latitude_lower double precision,
+    part1 integer)
+  RETURNS void AS
+$BODY$
+BEGIN
+	INSERT INTO public.Geo_gnaf_Nodes
+		    (
+		ADDRESS_DETAIL_PID 
+		,NUMBER_FIRST 
+		,NUMBER_LAST 
+		,STREET_NAME 
+		,STREET_TYPE_CODE 
+		,LOCALITY_NAME 
+		,STATE_ABBREVIATION 
+		,POSTCODE,
+		    latitude, longitude, hwy_flg, market, 
+		    comp_near, rdtype, edges, 
+		    comm_sum, noncomm_sum, comm_avg, noncomm_avg, 
+		    Primary_St_comm_sum, Primary_St_noncomm_sum, Primary_St_comm_avg, Primary_St_noncomm_avg, 
+		    Secondary_St_comm_sum, Secondary_St_noncomm_sum, Secondary_St_comm_avg, Secondary_St_noncomm_avg,		    
+		    pop_3k, pop_5k, avginc_500, avginc_1500, school_near, shop_near, 
+		    mine_near, mine_2500, uni, camp_near, camp1km, growth_5yr, red_1km, 
+		    ctx_fuel, ctx_diesel, ctx_unbranded, bunnings, ikea, masters, 
+		    nearest_high_traffic_retailer, fuel_3km, fuel_5km,
+		    sa2_id,sa2_name
+		    ,part
+		    )
+	    VALUES 
+		   (
+		--ADDRESS_DETAIL_PID
+		ADDRESS_DETAIL_PID 
+		--NUMBER_FIRST 
+		,NUMBER_FIRST 
+		--NUMBER_LAST 
+		,NUMBER_LAST 
+		--STREET_NAME 
+		,STREET_NAME 
+		--STREET_TYPE_CODE 
+		,STREET_TYPE_CODE 
+		--LOCALITY_NAME 
+		,LOCALITY_NAME 
+		--STATE_ABBREVIATION 
+		,STATE_ABBREVIATION 
+		--POSTCODE
+		,POSTCODE
+		--LAT
+		,LAT
+		--LONGI
+		,LONGI, 
+		--hwy_flg --1 - if the road type is a Highway or Freeway, 0 otherwise
+			(
+				SELECT 
+					CASE WHEN ( Feature = 'Highway' ) THEN 1 ELSE 0 END 
+				FROM 
+					public.roadtype RT
+				LEFT JOIN  
+					MappingRoadType MRT
+				  ON RT.roadtype = MRT.roadtype
+				WHERE 
+				--wkb_geometry && 'BOX3D( 150.92 -33.71, 151.22 -34.01)'::box3d   AND				
+				--wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d AND 
+				wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d AND 
+				ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint( LONGI, LAT)), 100)
+				ORDER BY 
+				RoadTypeKey , 
+				--Geography(wkb_geometry) <-> ST_MakePoint( LONGI, LAT) limit 1
+				ST_Distance(Geography(wkb_geometry), ST_MakePoint( LONGI, LAT), 'false') limit 1
+
+				),
+
+	--Market -- Greater Capital City area as defined by ABS
+
+			(
+				SELECT 
+					MAX(DISTINCT (GCCSA_NAME_2011))
+				FROM
+					public.demographics_sa4 SA4
+				LEFT JOIN 
+					MARKETAREA MA 
+					ON SA4.SA4_NAME11 = MA.SA4_NAME_2011
+				WHERE 
+					wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d AND 
+					ST_Intersects(ST_MakePoint(LONGI, LAT), Geography(wkb_geometry))
+				),
+
+	--Comp_Near -- Nearest competitor distance in m from Informed Sources
+
+			(
+				SELECT 
+					MIN(Comp_Near) 
+				FROM 
+					(
+					 SELECT MIN(ROUND(CAST(st_distance_sphere(st_makepoint(longitude, latitude),st_makepoint(LONGI, LAT)) As numeric),2)) AS Comp_Near 
+					 FROM cc_CompetitorsJanuary2016 
+					 WHERE wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d   
+					UNION 
+					 SELECT MIN(round(CAST(st_distance_sphere(st_makepoint(longitude, latitude),st_makepoint(LONGI, LAT)) As numeric),2)) AS Comp_Near 
+					 FROM cc_woolworthssites27_01_16
+					 WHERE wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d 
+					) T
+				),
+
+
+
+	--RdType RoadType -- Used to determien which road type the store is situated on. 
+
+			(
+				SELECT Feature || '(' || RoadTypeKey || ')' as RdType
+				FROM 
+					public.roadtype RT
+				left join 
+					MappingRoadType MRT
+						ON RT.roadtype = MRT.roadtype
+				WHERE 
+				wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d AND 
+				ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint( LONGI, LAT)), 100)
+				ORDER BY 
+				RoadTypeKey , 
+				--Geography(wkb_geometry) <-> ST_MakePoint( LONGI, LAT) limit 1
+				ST_Distance(Geography(wkb_geometry), ST_MakePoint( LONGI, LAT), 'false') limit 1
+				),
+	--Edges -- How many roads intersect with this point
+
+			(
+				SELECT 
+				 COUNT(DISTINCT(STREET))
+				FROM 
+				 public.roadtype RT
+				WHERE 
+				wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d AND 
+				ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint( LONGI, LAT)), 100)
+				),
+
+	-- Traffic Comm_SUM, NonComm_SUM, Comm_AVG, NonComm_AVG
+	--Comm_SUM -- Sum of commercial traffic within 100m radius from point
+			(
+				SELECT
+					sum(load_commveh_24_2way) as Comm_SUM
+					
+				FROM 
+					public.traffic 
+				WHERE 
+					wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d 
+				     AND 
+					ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)), 100.0)
+				     
+				),
+	--NonComm_SUM
+		 (
+				SELECT
+					sum(load_total_24_2way) - sum(load_commveh_24_2way) as NonComm_SUM 
+				FROM 
+					public.traffic 
+				WHERE 
+				wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d AND 
+				ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)), 100.0)
+				),
+	--Comm_AVG 
+			(
+				SELECT
+					sum(load_commveh_24_2way)/count(*)  as Comm_AVG
+				FROM 
+					public.traffic 
+				WHERE 
+				wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d AND 
+				ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)), 100.0)
+				),
+	--NonComm_AVG
+			(
+				SELECT
+					(sum(load_total_24_2way) - sum(load_commveh_24_2way))/count(*) as NonComm_AVG
+				FROM 
+					public.traffic 
+				WHERE 
+				wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d AND 
+				ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)), 100.0)
+				),
+
+-- Primary_St_comm_sum, Primary_St_noncomm_sum, Primary_St_comm_avg, Primary_St_noncomm_avg
+
+--Primary_St_comm_sum -- Primary street address as stated in the store attribude
+			(
+				SELECT
+					load_commveh_24_2way as Comm_SUM
+					
+				FROM 
+					public.traffic 
+				WHERE 
+					wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d 
+				AND 
+					ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)), 5000.0)
+
+				--AND UPPER(NAME) = STREET_NAME 
+				AND CASE WHEN (levenshtein(UPPER(NAME), TRIM(STREET_NAME))) < 4 THEN TRUE  ELSE FALSE END 
+				ORDER BY 
+					ROUND(CAST(st_distance(Geography(wkb_geometry),st_makepoint(LONGI, LAT)) AS NUMERIC),2)  limit 1
+				     
+				),
+--Primary_St_noncomm_sum
+		 (
+				SELECT
+					load_total_24_2way - load_commveh_24_2way as NonComm_SUM 
+				FROM 
+					public.traffic 
+				WHERE 
+					wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d 
+				AND 
+					ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)), 5000.0)
+				--AND UPPER(NAME) = STREET_NAME 
+				AND CASE WHEN (levenshtein(UPPER(NAME), TRIM(STREET_NAME))) < 4 THEN TRUE  ELSE FALSE END 
+				ORDER BY 
+					ROUND(CAST(st_distance(Geography(wkb_geometry),st_makepoint(LONGI, LAT)) AS NUMERIC),2)  limit 1
+				),
+--Primary_St_comm_avg 
+			(
+				SELECT
+					load_commveh_24_2way  as Comm_AVG
+				FROM 
+					public.traffic 
+				WHERE 
+					wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d 
+				AND 
+					ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)), 5000.0)
+				--AND UPPER(NAME) = STREET_NAME 
+				AND CASE WHEN (levenshtein(UPPER(NAME), TRIM(STREET_NAME))) < 4 THEN TRUE  ELSE FALSE END 
+				ORDER BY 
+					ROUND(CAST(st_distance(Geography(wkb_geometry),st_makepoint(LONGI, LAT)) AS NUMERIC),2)  limit 1
+				),
+--Primary_St_noncomm_avg
+			(
+				SELECT
+					((load_total_24_2way) - (load_commveh_24_2way)) as NonComm_AVG
+				FROM 
+					public.traffic 
+				WHERE 
+					wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d 
+				AND 
+					ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)), 5000.0)
+				--AND UPPER(NAME) = STREET_NAME 
+				AND CASE WHEN (levenshtein(UPPER(NAME), TRIM(STREET_NAME))) < 4 THEN TRUE  ELSE FALSE END 
+				ORDER BY 
+					ROUND(CAST(st_distance(Geography(wkb_geometry),st_makepoint(LONGI, LAT)) AS NUMERIC),2)  limit 1
+
+					
+				),
+
+--Secondary_St_comm_sum, Secondary_St_noncomm_sum, Secondary_St_comm_avg, 
+
+--Secondary_St_comm_sum -- Secondary street address as stated in the store attribude
+			(
+				SELECT
+					load_commveh_24_2way as Comm_SUM
+					
+				FROM 
+					public.traffic 
+				WHERE 
+					wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d 
+				AND 
+					ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)), 5000.0)
+
+				AND UPPER(NAME) = STREET_NAME 
+
+				ORDER BY 
+					ROUND(CAST(st_distance(Geography(wkb_geometry),st_makepoint(LONGI, LAT)) AS NUMERIC),2)  limit 1
+				     
+				),
+--Secondary_St_noncomm_sum
+		 (
+				SELECT
+					load_total_24_2way - load_commveh_24_2way as NonComm_SUM 
+				FROM 
+					public.traffic 
+				WHERE 
+					wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d 
+				AND 
+					ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)), 5000.0)
+				AND UPPER(NAME) = STREET_NAME 
+				ORDER BY 
+					ROUND(CAST(st_distance(Geography(wkb_geometry),st_makepoint(LONGI, LAT)) AS NUMERIC),2)  limit 1
+				),
+--Secondary_St_comm_avg 
+			(
+				SELECT
+					load_commveh_24_2way  as Comm_AVG
+				FROM 
+					public.traffic 
+				WHERE 
+					wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d 
+				AND 
+					ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)), 5000.0)
+				AND UPPER(NAME) = STREET_NAME 
+				ORDER BY 
+					ROUND(CAST(st_distance(Geography(wkb_geometry),st_makepoint(LONGI, LAT)) AS NUMERIC),2)  limit 1
+				),
+--Secondary_St_noncomm_avg
+			(
+				SELECT
+					((load_total_24_2way) - (load_commveh_24_2way)) as NonComm_AVG
+				FROM 
+					public.traffic 
+				WHERE 
+					wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d 
+				AND 
+					ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)), 5000.0)
+				AND UPPER(NAME) = STREET_NAME 
+				ORDER BY 
+					ROUND(CAST(st_distance(Geography(wkb_geometry),st_makepoint(LONGI, LAT)) AS NUMERIC),2)  limit 1
+
+					
+				),
+
+
+	-- Demographics Population 
+	--Pop_3k -- Total population (3 km) from ABS- from Caltex Service Station
+
+			(
+				SELECT 
+					SUM(tot_p_p)
+				FROM 
+					public.demographics_sa1
+				WHERE 
+					wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d AND 
+					ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)), 3000.0)
+				),
+	--Pop_5k --Total population (5 km)- from Caltex Service Station
+
+			(
+				SELECT 
+					sum (tot_p_p)
+				FROM 
+					public.demographics_sa1
+				WHERE 
+					wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d AND 
+					ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)), 5000.0)
+				),
+						
+	-- Demographics Income
+	-- AvgInc_500 --Mean of median weekly personal income of SA1 centroids within 5 km radius 
+
+
+			(	
+				SELECT 
+					sum (median_tot)/ count(*)
+				FROM 
+					public.demographics_sa1
+				WHERE 
+					wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d AND 
+					ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)), 5000.0)
+				),
+	-- AvgInc_1500 
+	--Mean of median weekly personal income of SA1 centroids within 1.5 km radius 
+
+			(
+				SELECT 
+					sum (median_tot)/ count(*)
+				FROM 
+					public.demographics_sa1
+				WHERE 
+					wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d AND 
+					ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)), 1500.0)
+				),
+				
+		
+	--School_Near
+	--Straight line distance to nearest public or private college orprimary school
+
+			(
+				SELECT 			
+				MIN(ROUND(CAST(st_distance_sphere(st_makepoint(src.longitude, src.latitude),st_makepoint(LONGI, LAT)) AS NUMERIC),2)) 			
+				FROM 
+				focal_points_schools1 src
+				WHERE wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d   
+			      ) ,
+		
+	--Shop_Near
+	--Straight line distance to nearest shopping centre of any type
+
+			(	
+				SELECT
+				MIN(ROUND(CAST(st_distance_sphere(st_makepoint(longitude, latitude),st_makepoint(LONGI, LAT)) As numeric),2)) 
+				FROM focal_points_shopping_centre1 
+				WHERE wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d   
+				),
+
+	--Mine_Near
+	--Straight line distance to nearest mine or quarry
+
+			(
+				SELECT 
+				MIN(ROUND(CAST(st_distance_sphere(st_makepoint(longitude, latitude),st_makepoint(LONGI, LAT)) As numeric),2)) 
+				FROM focal_points_mine_quarry 
+				WHERE wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d   
+				),
+	--Mine_2500
+	--Presence of mine or quarry within 2.5 km radius (1 = present,0 = absent)
+
+			(
+				SELECT 
+				CASE WHEN 
+				((MIN(ROUND(CAST(st_distance_sphere(st_makepoint(longitude, latitude),st_makepoint(LONGI, LAT)) As numeric),2))) < 2500)
+				THEN 1 ELSE 0 END 
+				FROM focal_points_mine_quarry 
+				WHERE wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d   
+				),
+	--Uni
+	--Straight line distance to nearest university
+
+			(
+				SELECT MIN(ROUND(CAST(st_distance_sphere(st_makepoint(longitude, latitude),st_makepoint(LONGI, LAT)) As numeric),2))
+				FROM focal_points_university 
+				WHERE wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d   
+				),
+	--Camp_Near
+	--Straight line distance to nearest camp site
+
+			(
+				SELECT MIN(ROUND(CAST(st_distance_sphere(st_makepoint(longitude, latitude),st_makepoint(LONGI, LAT)) As numeric),2))
+				FROM focal_points_caravan_camp1 
+				WHERE wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d   
+				),
+	--Camp1km
+	--Presence of a campsite within 1.0 km radius (1 = present,0 = absent)
+
+			(
+				SELECT 
+				CASE WHEN(
+				MIN(ROUND(CAST(st_distance_sphere(st_makepoint(longitude, latitude),st_makepoint(LONGI, LAT)) As numeric),2)) < 1000) 
+				THEN 1 ELSE 0 END
+				FROM focal_points_caravan_camp1 
+				WHERE wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d   
+				),
+
+	--Growth_5Yr
+	--Percent population growth within 5-year window by SA2 from ??? Caltex Service station within that SA2
+
+			(
+				SELECT 
+					SUM(grwth0813) 
+				FROM 
+					public.demographics_sa2 
+				WHERE 
+					wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d    AND 
+					ST_Intersects(ST_MakePoint(LONGI, LAT), Geography(wkb_geometry))				
+					
+				),
+
+	-- Red_1km	
+	--Count of redemption offers (CTX-WOW, WOW-CTX, Coles Express) within 1km
+
+			(
+				SELECT 
+					SUM(COUNTS) AS SUM_COUNTS 
+				FROM 
+				(
+					SELECT COUNT(*) COUNTS 
+					FROM cc_caltexwoolworths27_01_16 
+					WHERE 
+					wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d    AND 
+					ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)), 1000.0)
+				UNION
+					SELECT COUNT(*) COUNTS 
+					FROM cc_colesexpressjanuary2016 
+					WHERE 
+					wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d    AND 
+					ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)), 1000.0)
+				UNION
+					SELECT COUNT(*) COUNTS 
+					FROM cc_woolworthssites27_01_16 
+					WHERE 
+					wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d    AND 
+					ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)), 1000.0)
+				) T
+				),
+		
+				
+	--Ctx_Fuel
+	--Straight line distance to nearest CTX consumer and reseller site
+
+			(
+				SELECT 	MIN(round(CAST(st_distance_sphere(st_makepoint(longitude, latitude),st_makepoint(LONGI, LAT)) As numeric),2)  )
+				FROM 	cc_caltexfuel08_02_2016_v3
+				WHERE wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d    
+				),
+	--Ctx_Diesel
+	--Straight line distance to nearest CTX unmanned diesel/truck stop
+
+
+			(
+				SELECT 	MIN(ROUND(CAST(st_distance_sphere(st_makepoint(longitude, latitude),st_makepoint(LONGI, LAT)) As numeric),2)  )
+				FROM 	cc_diesel_truckstop08_02_2016_v3
+				WHERE wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d    
+				),	
+	--Ctx_Unbranded
+	--Straight line distance to nearest unbranded CTX reseller site
+			(
+				SELECT MIN(ROUND(CAST(st_distance_sphere(st_makepoint(longitude, latitude),st_makepoint(LONGI, LAT)) As numeric),2)  )
+				FROM cc_caltexunbranded08_02_2016
+				WHERE wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d    
+				),
+
+
+	-- Nearest bunnings 
+	--Straight line distance to nearest Bunnings
+
+			(
+				SELECT MIN(ROUND(CAST(st_distance_sphere(st_makepoint(longitude, latitude),st_makepoint(LONGI, LAT)) As numeric),2)) 
+				FROM focal_points_bunnings 
+				WHERE wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d    
+				),
+	-- Nearest IKEA
+	--Straight line distance to nearest IKEA
+
+			(
+				SELECT MIN(ROUND(CAST(st_distance_sphere(st_makepoint(longitude, latitude),st_makepoint(LONGI, LAT)) As numeric),2)) 
+				FROM focal_points_ikea 
+				WHERE wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d    
+				),
+
+	-- Nearest Masters
+	--Straight line distance to nearest Masters
+
+			(
+				SELECT MIN(ROUND(CAST(st_distance_sphere(st_makepoint(longitude, latitude),st_makepoint(LONGI, LAT)) As numeric),2) )
+				FROM focal_points_masters_australia 
+				WHERE wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d    
+				),
+
+				
+	-- nearest_high_traffic_retailer
+	--Minimum of (Bunnings, IKEA, Masters)
+
+			(
+				SELECT MIN(ROUND(CAST(st_distance_sphere(st_makepoint(longitude, latitude),st_makepoint(LONGI, LAT)) As numeric),2) )
+				FROM
+				(
+					SELECT * FROM(
+						SELECT * FROM focal_points_bunnings 
+							WHERE wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d    
+					UNION
+						SELECT * FROM focal_points_ikea 
+							WHERE wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d    
+					UNION 
+						SELECT * FROM focal_points_masters_australia 
+							WHERE wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d    
+							)  t
+					ORDER BY 
+						--Geography(wkb_geometry) <-> ST_MakePoint( LONGI, LAT) limit 1 
+						ST_Distance(Geography(wkb_geometry), ST_MakePoint( LONGI, LAT), 'false') limit 1
+				) HI_TRAFFIC
+				),
+
+
+	-- Fuel_3km
+	--Count of all service stations (CTX + competitors) within 3km of Caltex Service Station
+
+			(
+				
+				SELECT  COUNT(DISTINCT(site_name || ' ' || BRAND)) 
+				FROM cc_all_service_stations_feb_2016 
+				WHERE 
+					wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d    AND 
+					ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)), 3000.0)
+					and site_name <> '' 
+					and ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)), 10.0) = 'F'
+				
+				),
+	--Fuel_5km
+	--Count of all service stations (CTX + competitors) within 5km of Caltex Service Station
+
+			(			
+				SELECT  COUNT(DISTINCT(site_name || ' ' || BRAND)) 
+				FROM cc_all_service_stations_feb_2016 
+				WHERE 
+					wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d    AND 
+					ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)), 5000.0)
+					AND site_name <> '' 
+					AND ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)), 10.0) = 'F'
+				
+				),
+
+				-- Add select statement in the insert node function
+(
+                                                            SELECT MIN(SA2_MAIN11) AS SA2_MAIN11
+                                                            FROM public.demographics_sa2
+                                                            WHERE wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d AND 
+                                                            ST_Intersects(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)))
+                                                            ),
+
+                                             (              
+                                                            SELECT MIN(SA2_NAME11) AS SA2_NAME11
+                                                            FROM public.demographics_sa2
+                                                            WHERE wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d AND 
+                                                            ST_Intersects(Geography(wkb_geometry), Geography(ST_MakePoint(LONGI, LAT)))
+                                             ),
+
+				part1   
+	    );
+
+END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE
+  COST 10000;
+ALTER FUNCTION public.insert_geo_gnaf_nodes(character, integer, integer, character, character, character, character, character, double precision, double precision, double precision, double precision, double precision, double precision, integer)
+  OWNER TO postgres;
