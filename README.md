@@ -1,35 +1,28 @@
-### GeoSpatial_query
+## GeoSpatial_query
 
-**1. List of points in polygon and address points**
+1. List of points in polygon and address points
+2. Nearest Distance
+3. Number of points in radius
+4. Straight line distance
+5. GeoSpatial Query optimization
+6. Run optimization
 
-**2. Nearest Distance**
-
-**3. Number of points in radius**
-
-**4. Straight line distance**
-
-**5. GeoSpatial Query optimization**
-
-**6. Run optimization**
-
-
-
-**List of points in polygon and address points:**
-
+# List of points in polygon and address points:
+```
 SELECT * FROM traffic T where ST_Contains(ci_wkb_geometry, (wkb_geometry))
 UNION 
 SELECT * FROM traffic T where ST_Intersects(ci_wkb_geometry, (wkb_geometry))
+```
 
-
-**Nearest Distance:**
-
+# Nearest Distance:
+```
 SELECT MIN(ROUND(CAST(st_distance_sphere(st_makepoint(longitude, latitude),st_makepoint(LONGI, LAT)) As numeric),2)) AS Comp_Near 
 FROM cc_CompetitorsJanuary2016 
 WHERE wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d  
+```
 
-
-**Number of points in radius: **
-
+# Number of points in radius: 
+```
 SELECT 
 COUNT(DISTINCT(STREET))
 FROM 
@@ -37,19 +30,21 @@ public.roadtype RT
 WHERE 
 wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d AND 
 ST_DWithin(Geography(wkb_geometry), Geography(ST_MakePoint( LONGI, LAT)), 100)
+```
 
-**Straight line distance:**
-
+# Straight line distance:
+```
 SELECT 			
 MIN(ROUND(CAST(st_distance_sphere(st_makepoint(src.longitude, src.latitude),st_makepoint(LONGI, LAT)) AS NUMERIC),2)) 			
 FROM 
 focal_points_schools1 src
 WHERE wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d   
+```
 
-**Query Optimiztion**
+# Query Optimiztion: 
+```
 wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d AND 
 
---Presence of mine or quarry within 2.5 km radius (1 = present,0 = absent)
 
 SELECT 
 CASE WHEN 
@@ -57,11 +52,12 @@ CASE WHEN
 THEN 1 ELSE 0 END 
 FROM focal_points_mine_quarry 
 WHERE wkb_geometry && pgis_makeboxgeom(box_longitude_upper,box_latitude_upper, box_longitude_lower,box_latitude_lower, 4326)::box3d 
+```
 
-
-**Run optimization**
+# Run optimization
 Arbitrary Function call to overcome Cartesian join
 
+```
 CREATE OR REPLACE FUNCTION public.runinsert_store_weather()
   RETURNS integer AS
 $BODY$
@@ -154,3 +150,4 @@ END;
 $BODY$
   LANGUAGE plpgsql VOLATILE
   COST 10000;
+```
